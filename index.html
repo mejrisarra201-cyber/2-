@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Abir Hmam · AR 3D</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&family=Cormorant+Garamond:wght@300;400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r150/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"></script>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; color: #F4E9DF; font-family: "Cormorant Garamond", serif; }
+  #ar { position: fixed; inset: 0; }
+  #start { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #082B27; z-index: 5; }
+  #begin { width: 120px; height: 120px; border-radius: 50%; border: 1px solid #B99A69; background: transparent; cursor: pointer; padding: 0; display: flex; align-items: center; justify-content: center; animation: breathe 2.4s ease-in-out infinite; }
+  #begin span { width: 0; height: 0; border-left: 22px solid #B99A69; border-top: 14px solid transparent; border-bottom: 14px solid transparent; margin-left: 8px; }
+  @keyframes breathe { 0%,100% { transform: scale(1); opacity: .6; } 50% { transform: scale(1.06); opacity: 1; } }
+  #hint { position: fixed; top: 7vh; left: 50%; transform: translateX(-50%); width: 22px; height: 22px; border-radius: 50%; border: 1px solid #B99A69; pointer-events: none; z-index: 3; animation: breathe 2.4s ease-in-out infinite; display: none; }
+  #name { position: fixed; left: 0; right: 0; top: 76%; text-align: center; pointer-events: none; opacity: 0; transition: opacity .6s ease; z-index: 3; }
+  #name .en { font-size: clamp(30px, 8vw, 44px); letter-spacing: .02em; text-shadow: 0 1px 12px rgba(8,43,39,.95); }
+  #name .ar { font-family: "Amiri", serif; font-size: clamp(20px, 5vw, 28px); color: #B99A69; margin-top: 2px; text-shadow: 0 1px 12px rgba(8,43,39,.95); }
+  #cap { position: fixed; left: 0; right: 0; bottom: 7vh; text-align: center; pointer-events: none; opacity: 0; transition: opacity .8s ease; padding: 0 24px; z-index: 3; }
+  #cap .ar { font-family: "Amiri", serif; font-size: clamp(20px, 5.6vw, 30px); line-height: 1.8; direction: rtl; text-shadow: 0 1px 10px rgba(8,43,39,.95); }
+  #cap .en { font-size: clamp(14px, 3.8vw, 18px); font-style: italic; letter-spacing: .03em; color: #A3A68B; margin-top: 6px; text-shadow: 0 1px 10px rgba(8,43,39,.95); }
+</style>
+</head>
+<body>
+<div id="ar"></div>
+<div id="hint"></div>
+<div id="name"><div class="en">Abir Hmam</div><div class="ar">عبير حمام</div></div>
+<div id="cap"><div class="ar"></div><div class="en"></div></div>
+<div id="start"><button id="begin" type="button" aria-label="start"><span></span></button></div>
+<audio id="music" src="music.mp3" preload="auto" playsinline></audio>
+
+<script>
+(function () {
+  var SPEED = 1.35, DUR = 43, RAD = 1.15;
+  var music = document.getElementById('music');
+  var nameEl = document.getElementById('name');
+  var capEl = document.getElementById('cap');
+  var capAr = capEl.querySelector('.ar');
+  var capEn = capEl.querySelector('.en');
+  var startEl = document.getElementById('start');
+  var beginBtn = document.getElementById('begin');
+  var hint = document.getElementById('hint');
+
+  function clamp(x) { return Math.max(0, Math.min(1, x)); }
+  function easeOut(x) { return 1 - Math.pow(1 - clamp(x), 3); }
+  function smooth(x) { x = clamp(x); return x * x * (3 - 2 * x); }
+
+  // ---------- 3D content: built once, placed on the target, then floated over the camera ----------
+  var root = new THREE.Group();
+  root.scale.setScalar(0.6);
+  var plate = new THREE.Group();
+  plate.rotation.x = 1.0; // tilted so the plate faces the viewer
+  root.add(plate);
+
+  function glowTexture() {
+    var c = document.createElement('canvas'); c.width = c.height = 128;
+    var g = c.getContext('2d');
+    var gr = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+    gr.addColorStop(0, 'rgba(255,240,205,1)');
+    gr.addColorStop(0.3, 'rgba(185,154,105,0.7)');
+    gr.addColorStop(1, 'rgba(185,154,105,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+    return new THREE.CanvasTexture(c);
+  }
+  var glowTex = glowTexture();
+  var logoTex = new THREE.TextureLoader().load('logo.png');
+
+  // sand
+  var GRID = 140, COUNT = GRID * GRID;
+  var base = new Float32Array(COUNT * 2);
+  for (var j = 0; j < GRID; j++) for (var i = 0; i < GRID; i++) {
+    var q = j * GRID + i;
+    base[2 * q] = (i / (GRID - 1)) * 2 - 1;
+    base[2 * q + 1] = (j / (GRID - 1)) * 2 - 1;
+  }
+  var geo = new THREE.BufferGeometry();
+  var pos = new Float32Array(COUNT * 3), col = new Float32Array(COUNT * 3);
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  var sand = new THREE.Points(geo, new THREE.PointsMaterial({
+    size: 0.035, vertexColors: true, map: glowTex, transparent: true,
+    blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true
+  }));
+  plate.add(sand);
+
+  function chladni(n, m, x, y) {
+    var u = (x + 1) * Math.PI / 2, v = (y + 1) * Math.PI / 2;
+    return Math.cos(n * u) * Math.cos(m * v) - Math.cos(m * u) * Math.cos(n * v);
+  }
+  function updateSand(t) {
+    var plateIn = clamp((t - 3) / 3);
+    var fadeOut = clamp(1 - (t - 31) / 2);
+    var morph = t < 25.5 ? 0 : t < 26.5 ? smooth(t - 25.5) : t < 28.5 ? 1 : t < 29.5 ? 1 - smooth(t - 28.5) : 0;
+    var energy = t < 7 ? 0.3 : t < 14 ? 0.3 + 0.5 * clamp((t - 7) / 7) : t < 22 ? 0.9 : 1;
+    var amp = 0.16 * energy * plateIn;
+    for (var k = 0; k < COUNT; k++) {
+      var x = base[2 * k], y = base[2 * k + 1];
+      var inside = (x * x + y * y <= 1) ? 1 : 0;
+      var f = chladni(3, 8, x, y) * (1 - morph) + chladni(2, 5, x, y) * morph;
+      var nodal = Math.exp(-(f * f) / (2 * 0.08 * 0.08));
+      var h = Math.sin(t * 6 + f * 3) * amp * (0.3 + 0.7 * Math.abs(f));
+      pos[3 * k] = x * RAD;
+      pos[3 * k + 1] = h * inside;
+      pos[3 * k + 2] = y * RAD;
+      var b = (0.12 + 0.88 * nodal) * plateIn * fadeOut * inside;
+      col[3 * k] = 0.725 * b; col[3 * k + 1] = 0.604 * b; col[3 * k + 2] = 0.412 * b;
+    }
+    geo.attributes.position.needsUpdate = true;
+    geo.attributes.color.needsUpdate = true;
+    sand.visible = t >= 3 && t < 33;
+  }
+
+  // gold ring
+  var ring = new THREE.Mesh(
+    new THREE.TorusGeometry(RAD, 0.012, 12, 220),
+    new THREE.MeshBasicMaterial({ color: 0xB99A69, transparent: true, opacity: 0, depthWrite: false })
+  );
+  ring.rotation.x = Math.PI / 2;
+  plate.add(ring);
+  function updateRing(t) {
+    var grow = easeOut(t / 3);
+    ring.scale.setScalar(0.6 + 0.4 * grow);
+    ring.material.opacity = 0.9 * grow * clamp(1 - (t - 31) / 1.5);
+  }
+
+  // frequency ripples
+  var ripples = [];
+  for (var r = 0; r < 8; r++) {
+    var m = new THREE.Mesh(
+      new THREE.RingGeometry(0.97, 1.0, 180),
+      new THREE.MeshBasicMaterial({ color: 0xA3A68B, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false })
+    );
+    m.rotation.x = -Math.PI / 2;
+    plate.add(m);
+    ripples.push(m);
+  }
+  function updateRipples(t) {
+    ripples.forEach(function (mm, k) {
+      var age = t - (14 + k);
+      if (age < 0 || age > 2.2) { mm.material.opacity = 0; return; }
+      var p = age / 2.2;
+      mm.scale.set(RAD * (1 + p * 1.2), RAD * (1 + p * 1.2), 1);
+      mm.material.opacity = 0.5 * (1 - p);
+    });
+  }
+
+  // logo: rises from the plate and turns to face the viewer, in the middle of the frame
+  var logo = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.2, 1.2),
+    new THREE.MeshBasicMaterial({ map: logoTex, transparent: true, opacity: 0, depthWrite: false })
+  );
+  root.add(logo);
+  function updateLogo(t) {
+    var p = easeOut((t - 31.5) / 3.5);
+    logo.material.opacity = p;
+    logo.position.set(0, 0.12 * p, 0.25 * p);
+    logo.rotation.x = (-Math.PI / 2 + 1.0) * (1 - p);
+    logo.scale.setScalar(0.85 + 0.15 * p);
+  }
+
+  // the pattern repeats across the plate at the end
+  var tiles = new THREE.Group();
+  plate.add(tiles);
+  for (var a = -3; a <= 3; a++) for (var b2 = -3; b2 <= 3; b2++) {
+    var tm = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.9, 0.9),
+      new THREE.MeshBasicMaterial({ map: logoTex, transparent: true, opacity: 0, depthWrite: false })
+    );
+    tm.rotation.x = -Math.PI / 2;
+    tm.position.set(a * 1.0, -0.2, b2 * 1.0);
+    tiles.add(tm);
+  }
+  function updateTiles(t) {
+    var o = 0.2 * easeOut((t - 38) / 2.5);
+    tiles.children.forEach(function (mm) { mm.material.opacity = o; });
+  }
+
+  function updateName(t) { nameEl.style.opacity = easeOut((t - 34) / 2.5); }
+
+  var CAPTIONS = [
+    { s: 0, e: 3.4, ar: 'اسمك له تردد', en: 'Your name has a frequency.' },
+    { s: 14.5, e: 22.2, ar: 'اسمي يهتز بتردد', en: 'My name vibrates at a frequency.' },
+    { s: 22.5, e: 31, ar: 'غيّر الاهتزاز، فيتشكّل الواقع', en: 'Change the vibration, and reality takes a new form.' },
+    { s: 31.5, e: 38.5, ar: 'هذا هو الشكل الذي يتخذه اسمي حين يهتز', en: 'This is the shape my name takes when it vibrates.' }
+  ];
+  var lastCap = null;
+  function updateCaption(t) {
+    var c = null;
+    for (var i = 0; i < CAPTIONS.length; i++) {
+      if (t >= CAPTIONS[i].s && t < CAPTIONS[i].e) { c = CAPTIONS[i]; break; }
+    }
+    var key = c ? c.ar : '';
+    if (key === lastCap) return;
+    lastCap = key;
+    if (c) { capAr.textContent = c.ar; capEn.textContent = c.en; capEl.style.opacity = 1; }
+    else { capEl.style.opacity = 0; }
+  }
+
+  function setMusic(t) {
+    var v = clamp(t / 2) * 0.75 * (1 - clamp((t - 40) / 3));
+    try { music.volume = clamp(v); } catch (e) {}
+  }
+  function unlockMusic() {
+    try { music.playbackRate = SPEED; music.currentTime = 0; music.volume = 0; var p = music.play(); if (p && p.catch) p.catch(function () {}); } catch (e) {}
+  }
+
+  // ---------- AR timeline ----------
+  var mindarThree = null, renderer = null, scene = null, camera = null;
+  var started = false, ended = false, t0 = 0, timers = [];
+
+  function setupHaptics() {
+    function v(ms, pattern) {
+      timers.push(setTimeout(function () { if (navigator.vibrate) navigator.vibrate(pattern); }, ms));
+    }
+    v(14000, 60); v(15000, 60); v(16000, 60);
+    for (var k = 0; k < 8; k++) v((17 + k * 0.5) * 1000, 40);
+    v(38000, 120);
+  }
+
+  function startExperience() {
+    timers.forEach(clearTimeout); timers = [];
+    setupHaptics();
+    lastCap = null;
+    capEl.style.opacity = 0;
+    ended = false;
+    started = true;
+    t0 = performance.now();
+  }
+
+  function update(t) {
+    updateSand(t); updateRing(t); updateRipples(t); updateLogo(t); updateTiles(t);
+    updateName(t); updateCaption(t); setMusic(t);
+  }
+
+  async function init() {
+    mindarThree = new window.MINDAR.IMAGE.MindARThree({
+      container: document.getElementById('ar'),
+      imageTargetSrc: 'targets.mind'
+    });
+    renderer = mindarThree.renderer;
+    scene = mindarThree.scene;
+    camera = mindarThree.camera;
+    if (camera.parent !== scene) scene.add(camera);
+
+    var anchor = mindarThree.addAnchor(0);
+    anchor.group.add(root); // before the circle is found, the 3D scene sits on the circle
+
+    anchor.onTargetFound = function () {
+      if (started || ended) return;
+      // Float the 3D scene over the camera view, so the phone can move freely
+      anchor.group.remove(root);
+      camera.add(root);
+      root.position.set(0, 0, -2.4);
+      hint.style.display = 'none';
+      startExperience();
+    };
+
+    await mindarThree.start();
+    hint.style.display = 'block';
+
+    renderer.setAnimationLoop(function () {
+      if (started && !ended) {
+        var t = (performance.now() - t0) / 1000 * SPEED;
+        if (t >= DUR) { t = DUR; ended = true; nameEl.style.opacity = 1; }
+        update(t);
+      }
+      renderer.render(scene, camera);
+    });
+  }
+
+  beginBtn.addEventListener('click', function () {
+    this.disabled = true;
+    unlockMusic();
+    startEl.style.display = 'none';
+    init().catch(function (err) {
+      console.error(err);
+      startEl.style.display = 'flex';
+      beginBtn.disabled = false;
+    });
+  });
+
+  // Preload the first still state
+  update(0);
+  if (document.fonts && document.fonts.load) {
+    document.fonts.load('400 40px "Cormorant Garamond"');
+    document.fonts.load('28px "Amiri"');
+  }
+})();
+</script>
+</body>
+</html>
